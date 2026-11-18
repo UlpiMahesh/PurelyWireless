@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
+Database/
+Files/
+Input/
+Logs/
+Backups/
+BrowserData/
+Temp/
+
+# Electron / React frontend
+frontend/node_modules/
+frontend/dist/
+frontend/release/
+frontend/.vite/
