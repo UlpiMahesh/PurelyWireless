@@ -166,3 +166,37 @@ def test_server_side_never_imports_adapters_or_legacy_code():
             "print('BAD', bad)\n" % str(Path(__file__).resolve().parents[1]))
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
     assert out.strip() == "BAD []", out
+
+
+def test_stale_database_with_wrong_columns_gives_a_clear_error(tmp_path):
+    """Regression: a leftover DB with the right version number but an old table shape."""
+    import sqlite3
+    f = tmp_path / "stale.db"
+    con = sqlite3.connect(f)
+    con.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at DATETIME)")
+    con.execute("INSERT INTO schema_version VALUES (1, '2026-01-01')")
+    con.execute("CREATE TABLE automations (id VARCHAR PRIMARY KEY, name VARCHAR)")   # no 'spec' column
+    con.commit(); con.close()
+    db = Database(f)
+    with pytest.raises(migrations.SchemaMismatchError) as e:
+        migrations.ensure_schema(db.engine, f, tmp_path / "bk")
+    assert "automations: missing column(s) spec" in str(e.value) and str(f) in str(e.value)
+
+
+def test_server_reports_stale_database_as_fatal_json_not_a_traceback(tmp_path):
+    import json, sqlite3, subprocess
+    root = Path(__file__).resolve().parents[1]
+    d = tmp_path / "data"
+    (d / "Database").mkdir(parents=True)
+    con = sqlite3.connect(d / "Database" / "purelywireless.db")
+    con.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at DATETIME)")
+    con.execute("INSERT INTO schema_version VALUES (1, '2026-01-01')")
+    con.execute("CREATE TABLE automations (id VARCHAR PRIMARY KEY, name VARCHAR)")
+    con.commit(); con.close()
+    env = dict(os.environ, PW_TOKEN="t", PYTHONPATH=str(root))
+    r = subprocess.run([sys.executable, "-m", "backend.main", "--data-dir", str(d)],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode == 4
+    line = json.loads([l for l in r.stdout.splitlines() if l.startswith("{")][-1])
+    assert line["event"] == "fatal" and line["code"] == "schema_mismatch"
+    assert "Traceback" not in r.stderr

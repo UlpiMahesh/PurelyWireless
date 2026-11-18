@@ -1,1 +1,0 @@
-"""Automation registry and adapters."""

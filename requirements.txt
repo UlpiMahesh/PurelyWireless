@@ -1,4 +1,15 @@
-fastapi>=0.110,<1
-uvicorn[standard]>=0.27,<1
-SQLAlchemy>=2.0,<3
-pydantic>=2.6,<3
+# Backend stack: pinned to the versions that passed the test suite on your Windows machine
+# (Python 3.10.11).
+fastapi==0.162.5
+uvicorn==0.54.0
+websockets==16.1.1
+sqlalchemy==2.0.58
+pydantic==2.14.3
+psutil==7.2.2
+
+# Legacy automations (Batches 3a-3c). TODO: pin to the versions from your OLD project's venv
+# (run `pip show playwright pandas openpyxl xlrd` THERE and send me the output).
+playwright>=1.45
+pandas>=2.0
+openpyxl>=3.1
+xlrd>=2.0

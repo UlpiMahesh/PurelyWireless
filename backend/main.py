@@ -1,72 +1,104 @@
+"""Entry point.
+
+    python -m backend.main                      -> web server (127.0.0.1, random port)
+    python -m backend.main --run <task.json>    -> run ONE automation task (internal)
+
+The same entry point is used by the PyInstaller executable (``backend.exe --run ...``).
+Heavy imports are deferred so a runner subprocess does not load the web stack.
+"""
 from __future__ import annotations
 
-import logging
+import argparse
+import json
 import os
 import secrets
-from contextlib import asynccontextmanager
-from pathlib import Path
-
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-
-from backend.api.routes import router
-from backend.core.logging_config import configure_logging
-from backend.core.paths import get_paths
-from backend.database.session import initialize_database, make_engine, make_session_factory
-from backend.task_manager.manager import TaskManager
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    token = os.environ.get("PW_API_TOKEN") or secrets.token_urlsafe(32)
-    app.state.api_token = token
-    print(f"PW_BACKEND_TOKEN={token}", flush=True)
-    paths = get_paths()
-    configure_logging(paths.logs)
-    engine = make_engine(paths.database_file)
-    initialize_database(engine)
-    session_factory = make_session_factory(engine)
-    manager = TaskManager(session_factory, PROJECT_ROOT)
-    manager.register_automations()
-    manager.recover()
-    app.state.paths = paths
-    app.state.engine = engine
-    app.state.session_factory = session_factory
-    app.state.task_manager = manager
-    manager.start()
-    logging.getLogger(__name__).info("Backend data directory: %s", paths.root)
-    yield
-    await manager.shutdown()
-    engine.dispose()
-
-app = FastAPI(title="Purely Wireless Backend", version="0.1.0", lifespan=lifespan,
-              docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_credentials=False, allow_methods=["GET", "POST", "DELETE"], allow_headers=["*"])
+import socket
+import sys
+import threading
+import time
 
 
-@app.middleware("http")
-async def token_guard(request: Request, call_next):
-    # Allow browser CORS preflight requests through.
-    if request.method == "OPTIONS":
-        return await call_next(request)
-
-    expected = os.environ.get("PW_API_TOKEN") or app.state.api_token
-    supplied = request.headers.get("X-App-Token")
-
-    if not supplied or not secrets.compare_digest(supplied, expected):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Missing or invalid application token"},
-        )
-
-    return await call_next(request)
+def _emit(obj: dict) -> None:
+    print(json.dumps(obj), flush=True)
 
 
-app.include_router(router, prefix="/api")
+def serve(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from backend.core.config import AppConfig, Paths
+    from backend.core.logging_setup import setup_logging
+
+    paths = (Paths(Path(args.data_dir)) if args.data_dir else AppConfig.default_paths()).ensure()
+    setup_logging(paths.logs)
+
+    token = os.environ.pop("PW_TOKEN", None)          # removed so runners never inherit it
+    if not token:
+        if not args.dev:
+            _emit({"event": "fatal", "code": "no_token", "message": "PW_TOKEN is not set."})
+            return 2
+        token = secrets.token_urlsafe(32)
+
+    # Fail early (with a clean message for Electron) if the database is from a newer version.
+    from backend.database.migrations import SchemaMismatchError, SchemaTooNewError, ensure_schema
+    from backend.database.session import Database
+    db = Database(paths.db_file)
+    try:
+        ensure_schema(db.engine, paths.db_file, paths.backups)
+    except SchemaTooNewError as exc:
+        _emit({"event": "fatal", "code": "schema_too_new", "message": str(exc)})
+        return 3
+    except SchemaMismatchError as exc:
+        _emit({"event": "fatal", "code": "schema_mismatch", "message": str(exc)})
+        return 4
+    finally:
+        db.dispose()
+
+    import uvicorn
+
+    from backend.app import create_app
+
+    cfg = AppConfig(paths=paths, token=token, parent_pid=args.parent_pid)
+    app = create_app(cfg, announce=True, dev_token_in_ready_line=args.dev)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", args.port))                # 127.0.0.1 only; port 0 = random free port
+    app.state.port = sock.getsockname()[1]
+
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))
+
+    if args.parent_pid:
+        from backend.core.process_tree import parent_gone
+
+        def watch() -> None:
+            while not server.should_exit:
+                time.sleep(2)
+                if parent_gone(args.parent_pid):
+                    server.should_exit = True
+                    time.sleep(15)
+                    os._exit(0)
+        threading.Thread(target=watch, name="parent-watchdog", daemon=True).start()
+
+    try:
+        server.run(sockets=[sock])
+    except KeyboardInterrupt:          # Ctrl+C: uvicorn already shut down cleanly; just exit quietly
+        pass
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--run" in argv:                                # runner mode: no web imports
+        i = argv.index("--run")
+        from backend.task_manager.runner import run_main
+        return run_main(argv[i + 1])
+
+    p = argparse.ArgumentParser(prog="purelywireless-backend")
+    p.add_argument("--port", type=int, default=0)
+    p.add_argument("--data-dir", default=None)
+    p.add_argument("--parent-pid", type=int, default=None)
+    p.add_argument("--dev", action="store_true", help="generate a token if PW_TOKEN is unset and print it")
+    return serve(p.parse_args(argv))
+
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=int(os.environ.get("PW_PORT", "8765")), reload=False)
+    sys.exit(main())

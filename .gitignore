@@ -1,18 +1,10 @@
-.venv/
 __pycache__/
-.pytest_cache/
-*.py[cod]
+*.pyc
+.venv/
+node_modules/
+dist/
+build/
 .env
-/Database/
-/Files/
-/Input/
-/Logs/
-/Backups/
-/BrowserData/
-/Temp/
-
-# Electron / React frontend
-frontend/node_modules/
-frontend/dist/
-frontend/release/
-frontend/.vite/
+*.db
+*.db-wal
+*.db-shm
