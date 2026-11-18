@@ -1,10 +1,32 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+.env
+
+# Node / Electron
 node_modules/
 dist/
 build/
-.env
+frontend/release/
+frontend/.vite/
+
+# IDEs
+.idea/
+.vscode/
+
+# Local data and credentials (anchored to the repo root, so source folders such as
+# backend/database/ are NOT ignored)
 *.db
 *.db-wal
 *.db-shm
+/Database/
+/Files/
+/Input/
+/Logs/
+/Backups/
+/BrowserData/
+/Temp/
+/Config/
+marketlogins*.xlsx
